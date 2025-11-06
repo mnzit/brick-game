@@ -1,280 +1,232 @@
-// =========================================================================
-// 1. GAME SETUP AND OBJECT DEFINITIONS (Keep outside DOMContentLoaded)
-// =========================================================================
+// Simple top-down endless car racing game
+// Player controls a car that changes lanes to avoid incoming cars.
 
 const canvas = document.getElementById('game');
-// Add a strong check here to ensure the canvas exists
-if (!canvas) {
-    console.error("Canvas element 'game' not found! Check index.html.");
-    // Exit the script early if the canvas is missing
-    throw new Error("Canvas element 'game' not found.");
-} 
-
+if (!canvas) throw new Error("Canvas element 'game' not found.");
 const ctx = canvas.getContext('2d');
 const W = canvas.width;
 const H = canvas.height;
 
-// Game State - Initialized later in DOMContentLoaded
+// Game state
 let running = false;
 let score = 0;
-let lives = 3;
-let highScore = 0; // Initialize to 0, load actual value later
-let animationFrameId = null; 
+let speed = 3; // base game speed
+let highScore = 0;
+let animationFrameId = null;
 
-// Paddle Setup
-const paddle = {
-    w: 100,
-    h: 10,
-    x: W / 2 - 50,
-    y: H - 30,
-    speed: 5,
+// Road/lane layout
+const lanes = 3;
+const laneWidth = W / lanes;
+
+// Player car
+const player = {
+    lane: 1, // 0..lanes-1 (start center)
+    x: laneWidth * 1 + laneWidth / 2,
+    y: H - 120,
+    w: 40,
+    h: 70,
     color: '#0cf'
 };
 
-// Ball Setup
-const ball = {
-    r: 6,
-    x: W / 2,
-    y: H - 40,
-    vx: 3,
-    vy: -3,
-    color: '#fff'
-};
+// Enemy cars
+let enemies = [];
+let spawnTimer = 0;
+const spawnInterval = 90; // frames
 
-// Brick Setup
-const brickW = 60;
-const brickH = 15;
-const brickRow = 5;
-const brickCol = 12;
-const brickPadding = 5;
-const totalBrickWidth = brickCol * (brickW + brickPadding) - brickPadding;
-const brickOffsetTop = 30;
-const brickOffsetLeft = (W - totalBrickWidth) / 2; 
-let bricks = [];
+// Road stripe effect
+let stripeOffset = 0;
 
-// Input State
-let leftDown = false;
-let rightDown = false;
+// Input movement timing (prevents repeating moves when key is held)
+let lastMoveTime = 0;
+const minMoveInterval = 150; // ms between allowed lane changes
 
-// =========================================================================
-// 2. INITIALIZATION AND RESET FUNCTIONS
-// =========================================================================
-
-function initBricks() {
-    bricks = [];
-    for (let r = 0; r < brickRow; r++) {
-        bricks[r] = [];
-        for (let c = 0; c < brickCol; c++) {
-            const x = c * (brickW + brickPadding) + brickOffsetLeft;
-            const y = r * (brickH + brickPadding) + brickOffsetTop;
-            bricks[r][c] = { x, y, alive: true };
-        }
-    }
-}
-
-function resetBall() {
-    ball.x = W / 2;
-    ball.y = H - 40;
-    paddle.x = W / 2 - 50;
-    ball.vx = 3 * (Math.random() < 0.5 ? 1 : -1); 
-    ball.vy = -3;
-}
-
-function startGame() {
-    running = true;
-    if (!animationFrameId) {
-        gameLoop();
-    }
-}
-
-function restartGame() {
+function resetGame() {
     score = 0;
-    lives = 3;
-    initBricks();
-    resetBall();
-    updateHUD();
-    startGame();
+    speed = 3;
+    enemies = [];
+    spawnTimer = 0;
+    stripeOffset = 0;
+    player.lane = 1;
+    running = true;
+    if (!animationFrameId) gameLoop();
 }
 
-// =========================================================================
-// 3. DRAWING AND UI FUNCTIONS
-// =========================================================================
-
-function drawPaddle() {
-    ctx.fillStyle = paddle.color;
-    ctx.fillRect(paddle.x, paddle.y, paddle.w, paddle.h);
-}
-
-function drawBall() {
-    ctx.fillStyle = ball.color;
-    ctx.beginPath();
-    ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.closePath();
-}
-
-function drawBricks() {
-    let allDead = true;
-    for (let r = 0; r < brickRow; r++) {
-        for (let c = 0; c < brickCol; c++) {
-            const b = bricks[r][c];
-            if (b.alive) {
-                allDead = false;
-                ctx.fillStyle = r % 2 === 0 ? '#2b6' : '#6b2'; 
-                ctx.fillRect(b.x, b.y, brickW, brickH);
-            }
-        }
-    }
-    if (allDead) {
-        running = false;
-        alert('You Win! Press Restart to play again.');
-    }
-}
-
-function draw() {
-    // Clear canvas
-    ctx.clearRect(0, 0, W, H);
-    
-    drawBricks();
-    drawPaddle();
-    drawBall();
-}
-
-function updateHUD() {
-    document.getElementById('score').innerText = score;
-    document.getElementById('lives').innerText = lives;
-    document.getElementById('high').innerText = highScore;
-
+function endGame() {
+    running = false;
     if (score > highScore) {
         highScore = score;
-        if(window.electronAPI && window.electronAPI.setHighScore) {
-             window.electronAPI.setHighScore(highScore);
+        if (window.electronAPI && window.electronAPI.setHighScore) {
+            window.electronAPI.setHighScore(highScore);
         }
     }
 }
 
-// =========================================================================
-// 4. GAME LOOP AND CORE LOGIC
-// =========================================================================
+function spawnEnemy() {
+    const lane = Math.floor(Math.random() * lanes);
+    const w = 40;
+    const h = 70;
+    const x = lane * laneWidth + laneWidth / 2;
+    const y = -h - Math.random() * 200;
+    enemies.push({ lane, x, y, w, h, color: '#c33' });
+}
 
 function update() {
     if (!running) return;
 
-    // 1. Update Paddle Position
-    if (leftDown) paddle.x -= paddle.speed;
-    if (rightDown) paddle.x += paddle.speed;
-    paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+    // score increases with time and speed
+    score += Math.floor(speed / 1.5);
 
-    // 2. Update Ball Position
-    ball.x += ball.vx;
-    ball.y += ball.vy;
+    // gradually increase speed
+    if (score % 1000 === 0) speed += 0.2;
 
-    // 3. Wall Collision 
-    if (ball.x + ball.r > W || ball.x - ball.r < 0) ball.vx *= -1;
-    if (ball.y - ball.r < 0) ball.vy *= -1;
+    // update player x to lane center (lane changes handled on keydown)
+    player.x = player.lane * laneWidth + laneWidth / 2;
 
-    // 4. Paddle Collision
-    const py = H - 30; 
-    if (
-        ball.y + ball.r >= py && 
-        ball.y + ball.r <= py + Math.abs(ball.vy) &&
-        ball.x > paddle.x && 
-        ball.x < paddle.x + paddle.w &&
-        ball.vy > 0 
-    ) {
-        ball.vy = -Math.abs(ball.vy);
+    // spawn enemies periodically
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+        spawnTimer = 0;
+        spawnEnemy();
     }
 
-    // 5. Brick Collision
-    let hit = false;
-    for (let r = 0; r < brickRow; r++) {
-        for (let c = 0; c < brickCol; c++) {
-            const b = bricks[r][c];
-            if (!b.alive) continue;
-
-            const bLeft = b.x;
-            const bRight = b.x + brickW;
-            const bTop = b.y;
-            const bBottom = b.y + brickH;
-
-            if (
-                ball.x + ball.r > bLeft && ball.x - ball.r < bRight &&
-                ball.y + ball.r > bTop && ball.y - ball.r < bBottom
-            ) {
-                const prevBallY = ball.y - ball.vy;
-
-                // Vertical bounce (Hit Top or Bottom)
-                if (prevBallY > bBottom || prevBallY < bTop) {
-                    ball.vy *= -1;
-                } else {
-                    // Horizontal bounce (Hit Left or Right)
-                    ball.vx *= -1;
-                }
-
-                b.alive = false;
-                score += 10;
-                hit = true;
-                break; 
-            }
-        }
-        if (hit) break; 
+    // update enemies
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        enemies[i].y += speed + 1;
+        // small lateral jitter for variety
+        const laneCenter = enemies[i].lane * laneWidth + laneWidth / 2;
+        enemies[i].x = laneCenter;
+        // remove off-screen
+        if (enemies[i].y > H + 100) enemies.splice(i, 1);
     }
-    
-    // 6. Check for Miss (Ball below screen)
-    if (ball.y - ball.r > H) {
-        lives--;
-        if (lives > 0) {
-            resetBall();
-        } else {
-            running = false;
-            updateHUD();
+
+    // collision check (rectangular approximation)
+    for (const e of enemies) {
+        const px = player.x - player.w / 2;
+        const py = player.y - player.h / 2;
+        const ex = e.x - e.w / 2;
+        const ey = e.y - e.h / 2;
+        if (px < ex + e.w && px + player.w > ex && py < ey + e.h && py + player.h > ey) {
+            // collision
+            endGame();
+            break;
         }
     }
+
+    stripeOffset += speed;
+}
+
+function drawRoad() {
+    // background
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, 0, W, H);
+
+    // lanes
+    ctx.fillStyle = '#333';
+    const roadMargin = 40;
+    ctx.fillRect(roadMargin, 0, W - roadMargin * 2, H);
+
+    // lane markings
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 2;
+    for (let i = 1; i < lanes; i++) {
+        const x = i * laneWidth;
+        ctx.setLineDash([20, 20]);
+        ctx.lineDashOffset = -stripeOffset / 2;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+}
+
+function drawPlayer() {
+    ctx.fillStyle = player.color;
+    const x = player.x - player.w / 2;
+    const y = player.y - player.h / 2;
+    roundRect(ctx, x, y, player.w, player.h, 6, true, false);
+}
+
+function drawEnemies() {
+    for (const e of enemies) {
+        ctx.fillStyle = e.color;
+        const x = e.x - e.w / 2;
+        const y = e.y - e.h / 2;
+        roundRect(ctx, x, y, e.w, e.h, 6, true, false);
+    }
+}
+
+function drawHUD() {
+    document.getElementById('score').innerText = score;
+    document.getElementById('speed').innerText = Math.round(speed * 10) / 10;
+    document.getElementById('high').innerText = highScore;
+}
+
+function draw() {
+    drawRoad();
+    drawEnemies();
+    drawPlayer();
+    drawHUD();
 }
 
 function gameLoop() {
-    if (running) {
-        update();
-    }
+    if (running) update();
     draw();
-    updateHUD();
-    
     animationFrameId = requestAnimationFrame(gameLoop);
 }
 
+// Helper: rounded rect
+function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+    if (typeof stroke === 'undefined') stroke = true;
+    if (typeof r === 'undefined') r = 5;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+}
 
-// =========================================================================
-// 5. EVENT LISTENERS AND STARTUP (CRITICAL SECTION)
-// =========================================================================
-
+// Keydown handler: perform a single lane change per key press with debounce
 document.addEventListener('keydown', e => {
-    if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') leftDown = true;
-    if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') rightDown = true;
-});
+    const now = performance.now();
+    if (now - lastMoveTime < minMoveInterval) return;
 
-document.addEventListener('keyup', e => {
-    if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') leftDown = false;
-    if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') rightDown = false;
+    if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
+        player.lane = Math.max(0, player.lane - 1);
+        lastMoveTime = now;
+    }
+    if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
+        player.lane = Math.min(lanes - 1, player.lane + 1);
+        lastMoveTime = now;
+    }
 });
 
 document.addEventListener('DOMContentLoaded', () => {
     const restartButton = document.getElementById('restart');
     const toggleButton = document.getElementById('toggleFull');
 
-    // 1. Load high score safely now that DOM is ready
+    // Load high score
     if (window.electronAPI && window.electronAPI.getHighScore) {
         highScore = window.electronAPI.getHighScore();
     }
 
-    // 2. Hook up Buttons
-    if (restartButton) restartButton.addEventListener('click', restartGame);
-    
+    if (restartButton) restartButton.addEventListener('click', () => resetGame());
     if (toggleButton && window.electronAPI && window.electronAPI.toggleFullscreen) {
         toggleButton.addEventListener('click', () => {
             window.electronAPI.toggleFullscreen();
         });
     }
 
-    // 3. Start the game
-    restartGame();
+    // Start
+    resetGame();
 });
+
+// Expose for tests/debug
+window._game = {
+    resetGame,
+    endGame
+};
