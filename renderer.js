@@ -4,8 +4,8 @@
 const canvas = document.getElementById('game');
 if (!canvas) throw new Error("Canvas element 'game' not found.");
 const ctx = canvas.getContext('2d');
-const W = canvas.width;
-const H = canvas.height;
+let W = canvas.width;
+let H = canvas.height;
 
 // Game state
 let running = false;
@@ -16,7 +16,104 @@ let animationFrameId = null;
 
 // Road/lane layout
 const lanes = 3;
-const laneWidth = W / lanes;
+let laneWidth = W / lanes;
+let roadMargin = 40;
+
+// Responsive canvas sizing (handles DPR and window resize)
+function resizeCanvas() {
+    // Use most of the window but keep some margins
+    const cssW = Math.max(320, Math.min(window.innerWidth * 0.95, 1600));
+    const cssH = Math.max(240, Math.min(window.innerHeight * 0.9, 1100));
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = Math.floor(cssW) + 'px';
+    canvas.style.height = Math.floor(cssH) + 'px';
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    // Set logical width/height for drawing in CSS pixels
+    W = cssW;
+    H = cssH;
+
+    // Reset transform so drawing uses CSS pixels; the canvas bitmap is scaled by DPR
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    roadMargin = Math.max(20, Math.round(W * 0.06));
+    const innerRoadWidth = Math.max(100, W - roadMargin * 2);
+    laneWidth = innerRoadWidth / lanes;
+
+    // Recompute player/enemy sizes based on new H if images already loaded
+    const targetH = Math.max(40, Math.round(H * 0.14));
+    if (playerImgLoaded) {
+        const aspect = playerImg.naturalWidth / playerImg.naturalHeight || 1;
+        player.h = targetH;
+        player.w = Math.round(targetH * aspect);
+    } else {
+        player.h = Math.max(40, Math.round(H * 0.12));
+        player.w = Math.max(30, Math.round(player.h * 0.6));
+    }
+
+    if (trafficImgLoaded) {
+        const aspect = trafficImg.naturalWidth / trafficImg.naturalHeight || 1;
+        enemyDefaultH = targetH;
+        enemyDefaultW = Math.round(targetH * aspect);
+    } else {
+        enemyDefaultH = Math.max(40, Math.round(H * 0.12));
+        enemyDefaultW = Math.max(30, Math.round(enemyDefaultH * 0.6));
+    }
+
+    // Reposition player and existing enemies to new lane centers (account for roadMargin)
+    player.x = roadMargin + player.lane * laneWidth + laneWidth / 2;
+    player.y = H - Math.round(H * 0.18);
+    for (const e of enemies) {
+        e.x = roadMargin + e.lane * laneWidth + laneWidth / 2;
+    }
+}
+
+// Images (use uploaded assets if available)
+const playerImg = new Image();
+playerImg.src = 'images/player.png';
+let playerImgLoaded = false;
+playerImg.addEventListener('load', () => {
+    playerImgLoaded = true;
+    // scale player w/h to image aspect ratio while keeping target height
+    // if canvas already resized, use current H-based target, otherwise a sensible default
+    const targetH = Math.max(40, Math.round((H || 480) * 0.14));
+    const aspect = playerImg.naturalWidth / playerImg.naturalHeight || 1;
+    player.h = targetH;
+    player.w = Math.round(targetH * aspect);
+});
+playerImg.addEventListener('error', () => { playerImgLoaded = false; });
+
+const trafficImg = new Image();
+trafficImg.src = 'images/traffic.png';
+let trafficImgLoaded = false;
+let enemyDefaultW = 40;
+let enemyDefaultH = 70;
+trafficImg.addEventListener('load', () => {
+    trafficImgLoaded = true;
+    // compute default enemy size from image aspect ratio
+    const targetH = Math.max(40, Math.round((H || 480) * 0.14));
+    const aspect = trafficImg.naturalWidth / trafficImg.naturalHeight || 1;
+    enemyDefaultH = targetH;
+    enemyDefaultW = Math.round(targetH * aspect);
+});
+trafficImg.addEventListener('error', () => { trafficImgLoaded = false; });
+
+// Crash audio (play on collision/end)
+const crashAudio = new Audio('audio/crash.m4a');
+crashAudio.preload = 'auto';
+let crashAudioLoaded = false;
+crashAudio.addEventListener('canplaythrough', () => { crashAudioLoaded = true; });
+crashAudio.addEventListener('error', () => { crashAudioLoaded = false; });
+
+// Background audio (looped during gameplay)
+const bgAudio = new Audio('audio/backgroundaudio.mp3');
+bgAudio.preload = 'auto';
+bgAudio.loop = true;
+bgAudio.volume = 0.5;
+let bgAudioLoaded = false;
+bgAudio.addEventListener('canplaythrough', () => { bgAudioLoaded = true; });
+bgAudio.addEventListener('error', () => { bgAudioLoaded = false; });
 
 // Player car
 const player = {
@@ -48,11 +145,41 @@ function resetGame() {
     stripeOffset = 0;
     player.lane = 1;
     running = true;
+    // start background audio if available (ignore play errors due to autoplay)
+    try {
+        if (bgAudioLoaded) {
+            bgAudio.currentTime = 0;
+            const p = bgAudio.play();
+            if (p && p.catch) p.catch(() => {});
+        }
+    } catch (e) {
+        // ignore
+    }
+
     if (!animationFrameId) gameLoop();
 }
 
 function endGame() {
     running = false;
+    // play crash sound if available
+    try {
+        if (crashAudioLoaded) {
+            crashAudio.currentTime = 0;
+            const p = crashAudio.play();
+            if (p && p.catch) p.catch(() => {});
+        }
+    } catch (e) {
+        // ignore playback errors
+    }
+    // stop/pause background audio when game ends
+    try {
+        if (bgAudioLoaded && !bgAudio.paused) {
+            bgAudio.pause();
+            bgAudio.currentTime = 0;
+        }
+    } catch (e) {
+        // ignore
+    }
     if (score > highScore) {
         highScore = score;
         if (window.electronAPI && window.electronAPI.setHighScore) {
@@ -63,9 +190,9 @@ function endGame() {
 
 function spawnEnemy() {
     const lane = Math.floor(Math.random() * lanes);
-    const w = 40;
-    const h = 70;
-    const x = lane * laneWidth + laneWidth / 2;
+    const w = enemyDefaultW;
+    const h = enemyDefaultH;
+    const x = roadMargin + lane * laneWidth + laneWidth / 2;
     const y = -h - Math.random() * 200;
     enemies.push({ lane, x, y, w, h, color: '#c33' });
 }
@@ -80,7 +207,7 @@ function update() {
     if (score % 1000 === 0) speed += 0.2;
 
     // update player x to lane center (lane changes handled on keydown)
-    player.x = player.lane * laneWidth + laneWidth / 2;
+    player.x = roadMargin + player.lane * laneWidth + laneWidth / 2;
 
     // spawn enemies periodically
     spawnTimer++;
@@ -92,9 +219,9 @@ function update() {
     // update enemies
     for (let i = enemies.length - 1; i >= 0; i--) {
         enemies[i].y += speed + 1;
-        // small lateral jitter for variety
-        const laneCenter = enemies[i].lane * laneWidth + laneWidth / 2;
-        enemies[i].x = laneCenter;
+    // small lateral jitter for variety
+    const laneCenter = roadMargin + enemies[i].lane * laneWidth + laneWidth / 2;
+    enemies[i].x = laneCenter;
         // remove off-screen
         if (enemies[i].y > H + 100) enemies.splice(i, 1);
     }
@@ -122,14 +249,13 @@ function drawRoad() {
 
     // lanes
     ctx.fillStyle = '#333';
-    const roadMargin = 40;
     ctx.fillRect(roadMargin, 0, W - roadMargin * 2, H);
 
     // lane markings
     ctx.strokeStyle = '#555';
     ctx.lineWidth = 2;
     for (let i = 1; i < lanes; i++) {
-        const x = i * laneWidth;
+        const x = roadMargin + i * laneWidth;
         ctx.setLineDash([20, 20]);
         ctx.lineDashOffset = -stripeOffset / 2;
         ctx.beginPath();
@@ -141,18 +267,27 @@ function drawRoad() {
 }
 
 function drawPlayer() {
-    ctx.fillStyle = player.color;
     const x = player.x - player.w / 2;
     const y = player.y - player.h / 2;
-    roundRect(ctx, x, y, player.w, player.h, 6, true, false);
+    if (playerImgLoaded) {
+        // draw the image centered in the player rect
+        ctx.drawImage(playerImg, x, y, player.w, player.h);
+    } else {
+        ctx.fillStyle = player.color;
+        roundRect(ctx, x, y, player.w, player.h, 6, true, false);
+    }
 }
 
 function drawEnemies() {
     for (const e of enemies) {
-        ctx.fillStyle = e.color;
         const x = e.x - e.w / 2;
         const y = e.y - e.h / 2;
-        roundRect(ctx, x, y, e.w, e.h, 6, true, false);
+        if (trafficImgLoaded) {
+            ctx.drawImage(trafficImg, x, y, e.w, e.h);
+        } else {
+            ctx.fillStyle = e.color;
+            roundRect(ctx, x, y, e.w, e.h, 6, true, false);
+        }
     }
 }
 
@@ -221,7 +356,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Start
+    // make canvas responsive and start
+    resizeCanvas();
+    window.addEventListener('resize', () => {
+        resizeCanvas();
+    });
+
     resetGame();
 });
 
