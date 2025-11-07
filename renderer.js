@@ -22,11 +22,11 @@ const hitSound = new Audio('audio/hit2.wav');
 hitSound.volume = 0.5;
 
 // Sound when the player loses a life
-const loseSound = new Audio('audio/Lose1.m4a');
+const loseSound = new Audio('audio/lose1.m4a');
 loseSound.volume = 0.6;
 
 // Sound when the game is over (no lives left)
-const gameOverSound = new Audio('audio/Gameover1.m4a');
+const gameOverSound = new Audio('audio/gameover1.m4a');
 gameOverSound.volume = 0.7;
 
 // Game State - Initialized later in DOMContentLoaded
