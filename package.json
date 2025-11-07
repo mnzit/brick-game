@@ -1,6 +1,6 @@
 {
-  "name": "dizzy-development-tickle-vmoma",
-  "productName": "dizzy-development-tickle-vmoma",
+  "name": "traffic-driver",
+  "productName": "traffic-driver",
   "description": "My Electron application description",
   "keywords": [],
   "main": "./main.js",
